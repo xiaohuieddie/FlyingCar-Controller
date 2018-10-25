@@ -180,6 +180,17 @@ If successful, you should see the rotation of the vehicle about roll (omega.x) g
 
 If you come back to this step after the next step, you can try tuning just the body rate omega (without the outside angle controller) by setting `QuadControlParams.kpBank = 0`.
 
+The body rate controller takes as input the p_c,q_c,r_c commands. It returns the desired 3 rotational moment commands and uses the required p,q,r gains. I also limited the returned moments according to the specifications. 
+
+#### **Rubric 1**: Implemented body rate control in C++. The controller should be a proportional controller on body rates to commanded moments. The controller should take into account the moments of inertia of the drone when calculating the commanded moments.
+
+```
+V3F error = pqrCmd -pqr;
+V3F ubar = kpPQR * error;
+V3F moments = ubar * V3F(Ixx,Iyy,Izz);
+```
+The controller takes into account the moments of inertia, Ix,Iy and Iz.
+
 2. Implement roll / pitch control
 We won't be worrying about yaw just yet.
 
@@ -192,6 +203,44 @@ If successful you should now see the quad level itself (as shown below), though 
 <img src="animations/scenario2.gif" width="500"/>
 </p>
 
+#### **Rubric 2**: Implement roll pitch control in C++.The controller should use the acceleration and thrust commands, in addition to the vehicle attitude to output a body rate command. The controller should account for the non-linear transformation from local accelerations to body rates. Note that the drone's mass should be accounted for when calculating the target angles.
+
+I implemented the roll pitch controller in C++. It takes a thrust command, x and y accelerations and the attitude of the drone (φ,ψ,θ) and outputs the p and q commands. `p_c`, `q_c`. As you can see from the implementation the mass of the drone is accounted when calculating the target angles.The C++ implementations follow:
+
+```
+float b_x_a = R(0,2);
+float b_y_a = R(1,2);
+float R33 = R(2,2);
+float R21 = R(1,0);
+float R22 = R(1,1);
+float R12 = R(0,1);
+float R11 = R(0,0);
+
+float b_x_c_target = CONSTRAIN(accelCmd[0]*mass/(collThrustCmd),-maxTiltAngle, maxTiltAngle);
+float b_y_c_target = CONSTRAIN(accelCmd[1]*mass/(collThrustCmd),-maxTiltAngle, maxTiltAngle);
+
+if (collThrustCmd < 0)
+{
+b_x_c_target = 0;
+b_y_c_target = 0;
+}
+
+float b_dot_x_c = kpBank*(b_x_c_target - b_x_a);
+float b_dot_y_c = kpBank*(b_y_c_target - b_y_a);
+
+float p_c = (1/R33)*(R21*b_dot_x_c - R11*b_dot_y_c);
+float q_c = (1/R33)*(R22*b_dot_x_c - R12*b_dot_y_c);
+
+pqrCmd.x = p_c;
+pqrCmd.y = q_c;
+```
+
+Also, the controller accounts for the non-linear transformation from local accelerations to body rates. This is represented by the first two expressions where the mass of the drone is accounted.
+
+```
+float b_x_c_target = accelCmd[0]*mass/(collThrustCmd);
+float b_y_c_target = accelCmd[1]*mass/(collThrustCmd);
+```
 
 ### Position/velocity and yaw angle control (scenario 3) ###
 
@@ -215,6 +264,67 @@ Tune position control for settling time. Don’t try to tune yaw control too tig
 
 **Hint:**  For a second order system, such as the one for this quadcopter, the velocity gain (`kpVelXY` and `kpVelZ`) should be at least ~3-4 times greater than the respective position gain (`kpPosXY` and `kpPosZ`).
 
+#### **Rubric 5**:Implement lateral position control in C++. The controller should use the local NE position and velocity to generate a commanded local acceleration.
+
+Lateral Position Control:
+
+This controller is a PD controller in the x and y trajectories. In generates an acceleration commandin the x-y directions which is sent to the roll pitch controller.
+```
+V3F desAccel;
+
+accelCmd[0] = CONSTRAIN(accelCmd[0], -maxAccelXY, maxAccelXY);
+accelCmd[1] = CONSTRAIN(accelCmd[1], -maxAccelXY, maxAccelXY);
+
+velCmd[0] = CONSTRAIN(velCmd[0], -maxSpeedXY,maxSpeedXY);
+velCmd[1] = CONSTRAIN(velCmd[1], -maxSpeedXY,maxSpeedXY);
+
+
+desAccel.x = kpPosXY*(posCmd[0] - pos[0]) + kpVelXY*(velCmd[0] - vel[0]) + accelCmd[0];
+desAccel.y = kpPosXY*(posCmd[1] - pos[1]) + kpVelXY*(velCmd[1] - vel[1]) + accelCmd[1];
+
+desAccel.x = -desAccel.x;
+desAccel.y = -desAccel.y;
+desAccel.x = CONSTRAIN(desAccel.x, -maxAccelXY, maxAccelXY);
+desAccel.y = CONSTRAIN(desAccel.y, -maxAccelXY, maxAccelXY);
+
+desAccel.z = 0;
+```
+
+#### **Rubric 3**: Implement altitude control in C++. The controller should use both the down position and the down velocity to command thrust. Ensure that the output value is indeed thrust (the drone's mass needs to be accounted for) and that the thrust includes the non-linear effects from non-zero roll/pitch angles. Additionally, the C++ altitude controller should contain an integrator to handle the weight non-idealities presented in scenario 4.
+
+Altitude Control:
+
+The drone's mass is accounted for and also the non linear effects from non-zero pitch angels as before. Also, I have added the term `integratedAltitudeError` to handle the weight non-idealities.
+
+```
+float b_z = R(2,2);
+
+velZCmd = -CONSTRAIN(-velZCmd,-maxDescentRate,maxAscentRate);
+float e = posZCmd - posZ;
+
+#integrator to handle the weight non-idealities presented in scenario 4
+integratedAltitudeError += KiPosZ*e*dt;
+
+float u_bar_1 = kpPosZ*(posZCmd - posZ) + kpVelZ*(velZCmd - velZ) + accelZCmd + integratedAltitudeError;
+float accelZ = (u_bar_1 - 9.81f)/b_z;
+if (accelZ > 0){
+accelZ = 0;
+}
+
+thrust = -accelZ*mass;
+
+```
+
+#### **Rubric 6**:Implement yaw control in C++. The controller can be a linear/proportional heading controller to yaw rate commands (non-linear transformation not required).
+
+Yaw Control:
+
+Yaw control is control through the reactive moment command and that command only effects yaw. I used a linear transformation:
+
+```
+yawCmd = CONSTRAIN(yawCmd, -maxTiltAngle, maxTiltAngle);
+yawRateCmd = kpYaw*(yawCmd - yaw);
+```
 ### Non-idealities and robustness (scenario 4) ###
 
 In this part, we will explore some of the non-idealities and robustness of a controller.  For this simulation, we will use `Scenario 4`.  This is a configuration with 3 quads that are all are trying to move one meter forward.  However, this time, these quads are all a bit different:
@@ -226,12 +336,51 @@ In this part, we will explore some of the non-idealities and robustness of a con
 
 2. Edit `AltitudeControl()` to add basic integral control to help with the different-mass vehicle.
 
+As mentioned above, the following code are for integral control which are added:
+```
+integratedAltitudeError += KiPosZ*e*dt;
+
+float u_bar_1 = kpPosZ*(posZCmd - posZ) + kpVelZ*(velZCmd - velZ) + accelZCmd + integratedAltitudeError;
+```
 3. Tune the integral control, and other control parameters until all the quads successfully move properly.  Your drones' motion should look like this:
 
 <p align="center">
 <img src="animations/scenario4.gif" width="500"/>
 </p>
 
+### **Rubric 7**:Implement calculating the motor commands given commanded thrust and moments in C++.The thrust and moments should be converted to the appropriate 4 different desired thrust forces for the moments. Ensure that the dimensions of the drone are properly accounted for when calculating thrust from moments.
+
+As you can see below the thrust and moment commands have been used to calculate the desired thrusts. To calculate the desired thrusts I used 4 equations:
+
+```
+1)collThrustCmd = f1 + f2 + f3 + f4;
+2)momentCmd.x = l * (f1 + f4 - f2 - f3); // l = L*sqrt(2)/2) - perpendicular distance to axes
+3)momentCmd.y = l * (f1 + f2 - f3 - f4);
+4)momentCmd.z = kappa * f1 - kappa * f2 + kappa * f3 - kappa * f4;
+```
+where `torque = kappa * thrust`
+
+The dimensions of the drone are accounted for in the 2 and 3 equations above:
+
+```
+float a = momentCmd.x/(L*(1.414213562373095/2));//(L*(1.414213562373095));
+float b = momentCmd.y/(L*(1.414213562373095/2));//(L*(1.414213562373095));
+float c = momentCmd.z/kappa;
+float d = collThrustCmd;
+
+cmd.desiredThrustsN[0] = ((a+b+c+d)/(4.f));
+cmd.desiredThrustsN[1] = ((-a+b-c+d)/(4.f));
+cmd.desiredThrustsN[3] = ((-a-b+c+d)/(4.f));
+cmd.desiredThrustsN[2] = ((a-b-c+d)/(4.f));
+
+
+cmd.desiredThrustsN[0] = CONSTRAIN(cmd.desiredThrustsN[0],minMotorThrust,maxMotorThrust);
+cmd.desiredThrustsN[1] = CONSTRAIN(cmd.desiredThrustsN[1],minMotorThrust,maxMotorThrust);
+cmd.desiredThrustsN[2] = CONSTRAIN(cmd.desiredThrustsN[2],minMotorThrust,maxMotorThrust);
+cmd.desiredThrustsN[3] = CONSTRAIN(cmd.desiredThrustsN[3],minMotorThrust,maxMotorThrust);
+
+
+```
 
 ### Tracking trajectories ###
 
@@ -241,6 +390,7 @@ Now that we have all the working parts of a controller, you will put it all toge
 
 How well is your drone able to follow the trajectory?  It is able to hold to the path fairly well?
 
+Yes, it is working properly to follow the trajectory well.
 
 ### Extra Challenge 1 (Optional) ###
 
@@ -294,6 +444,18 @@ The specific performance metrics are as follows:
  - scenario 5
    - position error of the quad should be less than 0.25 meters for at least 3 seconds
 
+### **Rubric 9**: Your C++ controller is successfully able to fly the provided test trajectory and visually passes inspection of the scenarios leading up to the test trajectory.Ensure that in each scenario the drone looks stable and performs the required task. Specifically check that the student's controller is able to handle the non-linearities of scenario 4 (all three drones in the scenario should be able to perform the required task with the same control gains used).
+
+The drone in the C++ Project flights correctly the trajectory and passes all tests:
+
+```
+PASS: ABS(Quad1.Pos.X) was less than 0.100000 for at least 1.250000 seconds
+PASS: ABS(Quad2.Pos.X) was less than 0.100000 for at least 1.250000 seconds
+PASS: ABS(Quad2.Yaw) was less than 0.100000 for at least 1.000000 seconds
+Simulation #104 (../config/5_TrajectoryFollow.txt)
+Simulation #105 (../config/5_TrajectoryFollow.txt)
+PASS: ABS(Quad2.PosFollowErr) was less than 0.250000 for at least 3.000000 seconds
+```
 ## Authors ##
 
 Thanks to Fotokite for the initial development of the project code and simulator.
